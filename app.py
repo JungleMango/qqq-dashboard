@@ -6,6 +6,14 @@ import os
 import time
 from typing import Tuple, Optional
 import logging
+import concurrent.futures as cf
+import logging
+logging.basicConfig(level=logging.INFO)
+
+PRICE_TIMEOUT = 2.5   # seconds per ticker
+CACHE_TTL     = 30    # seconds for quote cache
+EXECUTOR      = cf.ThreadPoolExecutor(max_workers=8)
+
 logging.basicConfig(level=logging.INFO)
 
 
@@ -55,20 +63,19 @@ def load_portfolios():
 
 
 # ---- Quote cache (simple TTL) ----
-_CACHE = {}
-_CACHE_TTL = 10  # seconds
+_CACHE = {}  # {ticker: {"p":float|None, "i":str|None, "ts":str|None, "t":epoch}}
 
 def _cache_get(ticker: str):
     now = time.time()
     c = _CACHE.get(ticker)
-    if c and (now - c["t"]) < _CACHE_TTL:
+    if c and (now - c["t"]) < CACHE_TTL:
         return c
     return None
 
-def _cache_put(ticker: str, price: Optional[float], interval: Optional[str], iso: Optional[str]):
-    _CACHE[ticker] = {"p": price, "i": interval, "ts": iso, "t": time.time()}
+def _cache_put(ticker: str, p, i, ts):
+    _CACHE[ticker] = {"p": p, "i": i, "ts": ts, "t": time.time()}
 
-def _hist_try(ticker: str, period: str, interval: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
+def _hist_try(ticker: str, period: str, interval: str):
     hist = yf.Ticker(ticker).history(period=period, interval=interval)
     if hist is not None and not hist.empty:
         last = hist.iloc[-1]
@@ -78,36 +85,39 @@ def _hist_try(ticker: str, period: str, interval: str) -> Tuple[Optional[float],
         return price, interval, ts_utc.isoformat()
     return None, None, None
 
-def get_price(ticker: str) -> Tuple[Optional[float], Optional[str], Optional[str]]:
-    # cache
+def get_price(ticker: str):
+    """
+    Fast path first (fast_info), then cheap history fallbacks.
+    Returns (price, interval_used, iso_utc) — any may be None on failure.
+    """
     c = _cache_get(ticker)
     if c:
         return c["p"], c["i"], c["ts"]
 
-    # Try multiple sources, most granular first
-    for period, interval in [
-        ("1d", "1m"),
-        ("5d", "1h"),
-        ("1mo", "1d"),
-    ]:
-        p, i, ts = _hist_try(ticker, period, interval)
-        if p is not None:
-            _cache_put(ticker, p, i, ts)
-            return p, i, ts
-
-    # Last resort: fast_info
+    # 1) super fast path
     try:
-        info = yf.Ticker(ticker).fast_info
-        p = float(info.last_price) if getattr(info, "last_price", None) is not None else None
-        if p is not None:
+        fi = yf.Ticker(ticker).fast_info
+        if getattr(fi, "last_price", None) is not None:
+            p = float(fi.last_price)
             ts = datetime.utcnow().replace(tzinfo=timezone.utc).isoformat()
             _cache_put(ticker, p, "fast_info", ts)
             return p, "fast_info", ts
     except Exception:
         pass
 
+    # 2) small history fallbacks
+    for period, interval in [("1d", "1m"), ("5d", "1h"), ("1mo", "1d")]:
+        try:
+            p, i, ts = _hist_try(ticker, period, interval)
+            if p is not None:
+                _cache_put(ticker, p, i, ts)
+                return p, i, ts
+        except Exception:
+            continue
+
     _cache_put(ticker, None, None, None)
     return None, None, None
+
 
 @app.get("/api/quote")
 def api_quote():
