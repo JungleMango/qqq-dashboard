@@ -1,0 +1,19 @@
+{
+  "portfolios": [
+    {
+      "name": "Portfolio A - Short Term",
+      "currency": "USD",
+      "holdings": [
+        { "ticker": "QQQ",     "shares": 10,  "avg_cost": 420.00 },
+        { "ticker": "NVDA",    "shares": 2,   "avg_cost": 950.00 }
+      ]
+    },
+    {
+      "name": "Portfolio B - Long Term",
+      "currency": "CAD",
+      "holdings": [
+        { "ticker": "HHIS.TO", "shares": 127.4231, "avg_cost": 13.54 }
+      ]
+    }
+  ]
+}
